@@ -6,8 +6,9 @@ app = FastAPI(
     title="File Management Converter API",
     version="1.0.0",
     description=(
-        "Upload a file, declare its file type and sub-type, provide business metadata "
-        "such as data category, year, and batch name, and route the job through the file manager."
+        "Upload and process files through the File Manager. When the Data Processing Manager "
+        "finds invalid rows, download xport-quarantine.csv, review each row, confirm or release "
+        "it, and re-upload the reviewed CSV as the next version."
     ),
 )
 

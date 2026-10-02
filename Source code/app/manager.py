@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from hashlib import sha256
 from pathlib import Path
@@ -7,7 +8,7 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from app.config import EXTRACT_DIR
-from app.schemas import CSVFileDetails, DataCategory, FileProcessingContext, FileType
+from app.schemas import CSVFileDetails, CSVIncludedDetails, DataCategory, FileProcessingContext, FileType
 
 
 _SUPPORTED_FILE_TYPES = {item.value for item in FileType}
@@ -66,6 +67,29 @@ def load_csv_metadata(filename: str, base_dir: Path = EXTRACT_DIR) -> CSVFileDet
         raise HTTPException(status_code=404, detail="CSV metadata not found.")
 
     return CSVFileDetails.model_validate_json(metadata_path.read_text(encoding="utf-8"))
+
+
+def load_csv_included_details(filename: str, base_dir: Path = EXTRACT_DIR) -> CSVIncludedDetails:
+    details = load_csv_metadata(filename, base_dir=base_dir)
+    csv_path = base_dir / details.filename
+
+    try:
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+            reader = csv.DictReader(csv_file)
+            columns = reader.fieldnames
+            if columns is None:
+                raise HTTPException(status_code=422, detail="CSV file is missing a header row.")
+
+            rows = [
+                {column: value or "" for column, value in row.items() if column is not None}
+                for row in reader
+            ]
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="CSV file must be UTF-8 encoded.") from exc
+    except csv.Error as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid CSV file: {exc}") from exc
+
+    return CSVIncludedDetails(columns=columns, row_count=len(rows), rows=rows)
 
 
 def resolve_processing_plan(filename: str, context: FileProcessingContext) -> dict[str, str]:

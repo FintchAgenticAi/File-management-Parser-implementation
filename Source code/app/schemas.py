@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -53,3 +54,35 @@ class CSVFileDetails(BaseModel):
     year: int
     batch_name: str
     csv_path: str
+
+
+class CSVIncludedDetails(BaseModel):
+    columns: list[str]
+    row_count: int
+    rows: list[dict[str, str]]
+
+
+class ProcessingManagerPayload(BaseModel):
+    event: Literal["csv_ready_for_processing"]
+    csv_file: CSVFileDetails
+    included_details: CSVIncludedDetails
+
+
+class ProcessingJobRequest(BaseModel):
+    supplier_name: str = Field(..., min_length=1, description="Supplier or company name for the processing job.")
+    country: str = Field(..., min_length=1, description="Country associated with the processing job.")
+
+
+class QuarantineReviewRequest(BaseModel):
+    decision: Literal["confirm", "release", "keep_quarantined"] = Field(
+        ...,
+        description="Review action: confirm a valid row, release it from quarantine, or keep it quarantined.",
+    )
+    reason: str | None = Field(default=None, description="Optional explanation for the review decision.")
+
+
+class QuarantineNotification(BaseModel):
+    message: str = Field(..., description="Notification shown to the user.")
+    data_batch_id: int = Field(..., description="Processing batch containing quarantined rows.")
+    filename: str = Field("xport-quarantine.csv", description="CSV file the user downloads for review.")
+    download_url: str = Field(..., description="File Manager endpoint used to download the quarantine CSV.")

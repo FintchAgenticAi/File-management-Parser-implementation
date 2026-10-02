@@ -182,6 +182,43 @@ def test_upload_csv_skips_conversion(tmp_path: Path, monkeypatch) -> None:
     assert stored_csv.exists()
     assert stored_csv.read_text(encoding="utf-8-sig") == csv_content
 
+
+def test_send_csv_to_processing_manager_returns_metadata_and_rows(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
+
+    csv_content = "id,name,amount\n1,Alice,100\n2,Bob,200\n"
+    upload_response = client.post(
+        "/upload",
+        files={"file": ("sample.csv", csv_content, "text/csv")},
+        data={
+            "file_type": "csv",
+            "data_category": "company",
+            "country": "US",
+            "year": 2026,
+            "batch_name": "batch-csv",
+        },
+    )
+
+    assert upload_response.status_code == 200
+    response = client.post("/files/2026_batch-csv.csv/send-to-processing-manager")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["event"] == "csv_ready_for_processing"
+    assert payload["csv_file"]["filename"] == "2026_batch-csv.csv"
+    assert payload["csv_file"]["file_hash"] == upload_response.json()["file_hash"]
+    assert payload["csv_file"]["data_category"] == "company"
+    assert payload["included_details"] == {
+        "columns": ["id", "name", "amount"],
+        "row_count": 2,
+        "rows": [
+            {"id": "1", "name": "Alice", "amount": "100"},
+            {"id": "2", "name": "Bob", "amount": "200"},
+        ],
+    }
+
+
 def test_upload_openapi_exposes_single_file_type_enum() -> None:
     response = client.get("/openapi.json")
 
@@ -197,3 +234,75 @@ def test_upload_openapi_exposes_single_file_type_enum() -> None:
 
     parameters = response.json()["paths"]["/upload"]["post"]["parameters"]
     assert any(param["name"] == "version" and param["in"] == "query" for param in parameters)
+
+
+def test_quarantine_notification_contains_downloadable_export_name(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    (tmp_path / "2026_batch-csv.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
+    (tmp_path / "2026_batch-csv.meta.json").write_text(
+        '{"filename":"2026_batch-csv.csv","original_filename":"sample.csv",'
+        '"processor":"file_manager","file_hash":"hash","file_type":"csv",'
+        '"data_category":"company","country":"US","year":2026,'
+        '"batch_name":"batch-csv","csv_path":"2026_batch-csv.csv"}',
+        encoding="utf-8",
+    )
+
+    async def process_csv(*_args, **_kwargs):
+        return {"data_batch_id": 42, "quarantine_count": 1}
+
+    monkeypatch.setattr(routes.processing_manager, "process_csv", process_csv)
+    response = client.post(
+        "/files/2026_batch-csv.csv/process",
+        json={"supplier_name": "Acme", "country": "US"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["notification"] == {
+        "message": "Quarantine records require review.",
+        "data_batch_id": 42,
+        "filename": "xport-quarantine.csv",
+        "download_url": "/processing/batches/42/quarantine-export",
+    }
+
+
+def test_reupload_passes_current_version_plus_one_to_processing_manager(monkeypatch) -> None:
+    captured: dict[str, int] = {}
+
+    async def reupload_csv(data_batch_id, file, next_version):
+        captured["data_batch_id"] = data_batch_id
+        captured["next_version"] = next_version
+        assert file.filename == "reviewed.csv"
+        return {"status": "accepted", "version": next_version}
+
+    monkeypatch.setattr(routes.processing_manager, "reupload_csv", reupload_csv)
+    response = client.post(
+        "/processing/batches/42/reupload?current_version=3",
+        files={"file": ("reviewed.csv", "id,name\n1,Alice\n", "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert captured == {"data_batch_id": 42, "next_version": 4}
+    assert response.json() == {"status": "accepted", "version": 4}
+
+
+def test_quarantine_workflow_is_documented_in_openapi() -> None:
+    openapi = client.get("/openapi.json").json()
+
+    process_operation = openapi["paths"]["/files/{filename}/process"]["post"]
+    download_operation = openapi["paths"]["/processing/batches/{data_batch_id}/quarantine-export"]["get"]
+    review_operation = openapi["paths"]["/processing/quarantine/{quarantine_id}/review"]["post"]
+    reupload_operation = openapi["paths"]["/processing/batches/{data_batch_id}/reupload"]["post"]
+
+    assert "xport-quarantine.csv" in process_operation["description"]
+    assert "text/csv" in download_operation["responses"]["200"]["content"]
+    review_schema = openapi["components"]["schemas"]["QuarantineReviewRequest"]
+    assert set(review_schema["properties"]["decision"]["enum"]) == {
+        "confirm",
+        "release",
+        "keep_quarantined",
+    }
+    assert "current_version" in {
+        parameter["name"]
+        for parameter in reupload_operation["parameters"]
+    }
+    assert "next version" in reupload_operation["description"]
