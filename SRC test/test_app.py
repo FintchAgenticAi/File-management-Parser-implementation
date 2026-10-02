@@ -201,6 +201,31 @@ def test_upload_openapi_exposes_single_file_type_enum() -> None:
     assert any(param["name"] == "version" and param["in"] == "query" for param in parameters)
 
 
+def test_csv_details_response_excludes_processor(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
+
+    upload_response = client.post(
+        "/upload",
+        files={"file": ("sample.csv", "id,name\n1,Alice\n", "text/csv")},
+        data={
+            "file_type": "csv",
+            "data_category": "company",
+            "country": "US",
+            "year": 2026,
+            "batch_name": "details-test",
+        },
+    )
+    assert upload_response.status_code == 200
+
+    details_response = client.get("/files/2026_details-test.csv/details")
+
+    assert details_response.status_code == 200
+    assert "processor" not in details_response.json()
+    openapi = client.get("/openapi.json").json()
+    assert "processor" not in openapi["components"]["schemas"]["CSVFileDetailsResponse"]["properties"]
+
+
 def test_quarantine_notification_contains_downloadable_export_name(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
     (tmp_path / "2026_batch-csv.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")

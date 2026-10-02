@@ -5,6 +5,7 @@ from app.config import EXTRACT_DIR, PROCESSING_MANAGER_URL
 from app.manager import load_csv_metadata
 from app.schemas import (
     CSVFileDetails,
+    CSVFileDetailsResponse,
     DataCategory,
     FileType,
     ProcessingJobRequest,
@@ -75,11 +76,11 @@ async def upload_file(
 @router.get(
     "/files/{filename}/details",
     tags=["File Manager"],
-    response_model=CSVFileDetails,
+    response_model=CSVFileDetailsResponse,
     summary="Get CSV file details",
     description="Returns the metadata created when File Manager converted or stored the CSV.",
 )
-def get_csv_file_details(filename: str) -> CSVFileDetails:
+def get_csv_file_details(filename: str) -> CSVFileDetailsResponse:
     return load_csv_metadata(filename, base_dir=EXTRACT_DIR)
 
 

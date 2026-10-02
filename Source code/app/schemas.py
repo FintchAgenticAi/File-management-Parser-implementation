@@ -56,6 +56,18 @@ class CSVFileDetails(BaseModel):
     csv_path: str
 
 
+class CSVFileDetailsResponse(BaseModel):
+    filename: str
+    original_filename: str
+    file_hash: str | None = None
+    file_type: FileType
+    data_category: DataCategory
+    country: str | None = None
+    year: int
+    batch_name: str
+    csv_path: str
+
+
 class ProcessingJobRequest(BaseModel):
     supplier_name: str = Field(..., min_length=1, description="Supplier or company name for the processing job.")
     country: str = Field(..., min_length=1, description="Country associated with the processing job.")
