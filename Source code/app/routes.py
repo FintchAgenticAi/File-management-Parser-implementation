@@ -2,7 +2,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Response, Uploa
 from fastapi.responses import FileResponse
 
 from app.config import EXTRACT_DIR, PROCESSING_MANAGER_URL
-from app.manager import load_csv_metadata
+from app.manager import load_csv_metadata, update_csv_metadata_batch_id
 from app.schemas import (
     CSVFileDetails,
     CSVFileDetailsResponse,
@@ -52,7 +52,7 @@ async def upload_file(
     response: Response,
     version: str | None = Query(default=None, description="Batch version. Enter any version string such as v1"),
     file: UploadFile = File(..., description="The source file to convert into CSV."),
-    file_type: FileType = Form(..., description="Input file format to convert: json, xml, xlsx, csv, pdf, jpg, jpeg, png, gif, or webp."),
+    file_type: FileType = Form(..., description="Input file format to convert: json, xml, xls, xlsx, csv, pdf, jpg, jpeg, png, gif, or webp."),
     data_category: DataCategory = Form(..., description="Business category for the uploaded file."),
     country: str = Form(..., description="Country associated with the uploaded file."),
     year: int = Form(..., ge=1900, le=2100, description="Business year for the data."),
@@ -136,7 +136,17 @@ async def process_csv_from_file_manager(
     request: ProcessingJobRequest,
 ) -> dict[str, object]:
     details = load_csv_metadata(filename, base_dir=EXTRACT_DIR)
-    result = await processing_manager.process_csv(details.filename, request.supplier_name, request.country)
+    result = await processing_manager.process_csv(
+        details.filename,
+        request.supplier_name,
+        request.country,
+    )
+    if "data_batch_id" in result:
+        update_csv_metadata_batch_id(
+            details.filename,
+            int(result["data_batch_id"]),
+            base_dir=EXTRACT_DIR,
+        )
     if int(result.get("quarantine_count", 0)) > 0:
         batch_id = int(result["data_batch_id"])
         result["notification"] = QuarantineNotification(

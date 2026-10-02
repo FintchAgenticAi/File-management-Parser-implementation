@@ -10,11 +10,20 @@ class ProcessingManagerClient:
     def __init__(self, base_url: str):
         self.base_url = base_url.rstrip("/")
 
-    async def process_csv(self, filename: str, supplier_name: str, country: str) -> dict[str, Any]:
+    async def process_csv(
+        self,
+        filename: str,
+        supplier_name: str,
+        country: str,
+    ) -> dict[str, Any]:
         return await self._request_json(
             "POST",
             "/processing/jobs",
-            json={"csv_filename": filename, "supplier_name": supplier_name, "country": country},
+            json={
+                "csv_filename": filename,
+                "supplier_name": supplier_name,
+                "country": country,
+            },
         )
 
     async def download_quarantine_export(self, data_batch_id: int) -> httpx.Response:

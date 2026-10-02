@@ -10,6 +10,7 @@ from fastapi import HTTPException, Response, UploadFile
 from app.config import EXTRACT_DIR, UPLOAD_DIR
 from app.manager import (
     compute_file_hash,
+    data_batch_id_for,
     find_existing_csv_details_by_hash,
     resolve_processing_plan,
     store_csv_metadata,
@@ -206,6 +207,7 @@ class UploadService:
             message="uploaded this file before",
             output_file=details.filename,
             file_hash=details.file_hash or "",
+            data_batch_id=details.data_batch_id,
             file_type=details.file_type,
             data_category=details.data_category,
             country=details.country,
@@ -224,6 +226,7 @@ class UploadService:
             message=message,
             output_file=output_file,
             file_hash=file_hash,
+            data_batch_id=None,
             file_type=context.file_type,
             data_category=context.data_category,
             country=context.country,
@@ -236,6 +239,7 @@ class UploadService:
         converter_map = {
             ".json": self._json_converter,
             ".xml": self._xml_converter,
+            ".xls": self._excel_converter,
             ".xlsx": self._excel_converter,
             ".pdf": self._pdf_converter,
             ".jpg": lambda temp_path, output_dir: self._image_converter(temp_path, output_dir, original_filename=filename),

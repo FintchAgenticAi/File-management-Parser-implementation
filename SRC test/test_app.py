@@ -49,6 +49,35 @@ def test_upload_json(tmp_path: Path, monkeypatch) -> None:
 
     upload_path = tmp_path / "uploads" / "2026_batch-a.json"
     assert upload_path.exists()
+    assert payload["data_batch_id"] is None
+
+
+def test_batch_id_increments_and_stays_same_for_versions(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
+
+    first = client.post(
+        "/upload?version=v1",
+        files={"file": ("first.csv", "id\n1\n", "text/csv")},
+        data={"file_type": "csv", "data_category": "company", "country": "US", "year": 2026, "batch_name": "first"},
+    )
+    second = client.post(
+        "/upload?version=v1",
+        files={"file": ("second.csv", "id\n2\n", "text/csv")},
+        data={"file_type": "csv", "data_category": "company", "country": "US", "year": 2026, "batch_name": "second"},
+    )
+    first_v2 = client.post(
+        "/upload?version=v2",
+        files={"file": ("first-v2.csv", "id\n3\n", "text/csv")},
+        data={"file_type": "csv", "data_category": "company", "country": "US", "year": 2026, "batch_name": "first"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first_v2.status_code == 200
+    assert first.json()["data_batch_id"] is None
+    assert second.json()["data_batch_id"] is None
+    assert first_v2.json()["data_batch_id"] is None
 
 
 def test_upload_image_converts_to_csv(tmp_path: Path, monkeypatch) -> None:
@@ -193,7 +222,7 @@ def test_upload_openapi_exposes_single_file_type_enum() -> None:
     assert "file_type" in properties
     assert "input_file_type" not in properties
     assert "sub_file_type" not in properties
-    assert response.json()["components"]["schemas"]["FileType"]["enum"] == ["json", "xml", "csv", "xlsx", "pdf", "jpg", "jpeg", "png", "gif", "webp"]
+    assert response.json()["components"]["schemas"]["FileType"]["enum"] == ["json", "xml", "csv", "xls", "xlsx", "pdf", "jpg", "jpeg", "png", "gif", "webp"]
     assert response.json()["paths"]["/upload"]["post"]["tags"] == ["File Manager"]
     assert "/files/{filename}/send-to-processing-manager" not in response.json()["paths"]
 
@@ -254,6 +283,7 @@ def test_quarantine_notification_contains_downloadable_export_name(tmp_path: Pat
         "download_url": "/processing/batches/42/quarantine-export",
         "next_step": "Download the quarantine CSV, correct the rows, review them, and re-upload the next version.",
     }
+    assert '"data_batch_id": 42' in (tmp_path / "2026_batch-csv.meta.json").read_text(encoding="utf-8")
 
 
 def test_reupload_passes_current_version_plus_one_to_processing_manager(monkeypatch) -> None:

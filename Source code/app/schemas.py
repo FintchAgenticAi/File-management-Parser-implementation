@@ -10,6 +10,7 @@ class FileType(str, Enum):
     json = "json"
     xml = "xml"
     csv = "csv"
+    xls = "xls"
     xlsx = "xlsx"
     pdf = "pdf"
     jpg = "jpg"
@@ -36,6 +37,7 @@ class UploadResponse(BaseModel):
     message: str
     output_file: str
     file_hash: str
+    data_batch_id: int | None = None
     file_type: FileType
     data_category: DataCategory
     country: str | None = None
@@ -46,6 +48,7 @@ class UploadResponse(BaseModel):
 class CSVFileDetails(BaseModel):
     filename: str
     original_filename: str
+    data_batch_id: int | None = Field(default=None, ge=1)
     processor: str | None = None
     file_hash: str | None = None
     file_type: FileType
@@ -59,6 +62,7 @@ class CSVFileDetails(BaseModel):
 class CSVFileDetailsResponse(BaseModel):
     filename: str
     original_filename: str
+    data_batch_id: int | None = Field(default=None, ge=1)
     file_hash: str | None = None
     file_type: FileType
     data_category: DataCategory

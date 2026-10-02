@@ -5,4 +5,5 @@ httpx
 pdfplumber
 pandas
 openpyxl
+xlrd
 pytest

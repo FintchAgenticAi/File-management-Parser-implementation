@@ -15,6 +15,45 @@ _SUPPORTED_FILE_TYPES = {item.value for item in FileType}
 _logger = logging.getLogger(__name__)
 
 
+def data_batch_id_for(year: int, batch_name: str, base_dir: Path = EXTRACT_DIR) -> int:
+    """Return a stable sequential ID, starting at 1, for an uploaded batch."""
+    metadata_entries: list[tuple[Path, dict[str, object]]] = []
+    for metadata_path in sorted(base_dir.glob("*.meta.json")):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(metadata, dict):
+            metadata_entries.append((metadata_path, metadata))
+
+    batch_ids: list[int] = []
+    for _, metadata in metadata_entries:
+        existing_id = metadata.get("data_batch_id")
+        if isinstance(existing_id, int) and existing_id >= 1:
+            batch_ids.append(existing_id)
+
+    next_id = max(batch_ids, default=0) + 1
+    assigned_batches: dict[tuple[object, object], int] = {}
+    for metadata_path, metadata in metadata_entries:
+        batch_key = (metadata.get("year"), metadata.get("batch_name"))
+        existing_id = metadata.get("data_batch_id")
+        if not isinstance(existing_id, int) or existing_id < 1:
+            existing_id = assigned_batches.get(batch_key)
+            if existing_id is None:
+                existing_id = next_id
+                next_id += 1
+            metadata["data_batch_id"] = existing_id
+            try:
+                metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            except OSError:
+                _logger.warning("Could not persist batch ID in metadata file: %s", metadata_path, exc_info=True)
+        assigned_batches[batch_key] = existing_id
+        if metadata.get("year") == year and metadata.get("batch_name") == batch_name:
+            return existing_id
+
+    return next_id
+
+
 def _metadata_path_for(csv_path: Path) -> Path:
     return csv_path.parent / f"{csv_path.stem}.meta.json"
 
@@ -45,6 +84,7 @@ def store_csv_metadata(
     details = CSVFileDetails(
         filename=csv_path.name,
         original_filename=original_filename,
+        data_batch_id=None,
         processor=processor,
         file_hash=file_hash,
         file_type=context.file_type,
@@ -71,7 +111,28 @@ def load_csv_metadata(filename: str, base_dir: Path = EXTRACT_DIR) -> CSVFileDet
     if not metadata_path.exists():
         raise HTTPException(status_code=404, detail="CSV metadata not found.")
 
-    return CSVFileDetails.model_validate_json(metadata_path.read_text(encoding="utf-8"))
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.setdefault("data_batch_id", None)
+    return CSVFileDetails.model_validate(metadata)
+
+
+def update_csv_metadata_batch_id(
+    filename: str,
+    data_batch_id: int,
+    base_dir: Path = EXTRACT_DIR,
+) -> None:
+    base_path = base_dir.resolve()
+    csv_path = (base_path / filename).resolve()
+    if csv_path.parent != base_path:
+        raise HTTPException(status_code=400, detail="Invalid CSV filename.")
+
+    metadata_path = _metadata_path_for(csv_path)
+    if not metadata_path.exists():
+        raise HTTPException(status_code=404, detail="CSV metadata not found.")
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["data_batch_id"] = data_batch_id
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
 def resolve_processing_plan(filename: str, context: FileProcessingContext) -> dict[str, str]:
