@@ -183,42 +183,6 @@ def test_upload_csv_skips_conversion(tmp_path: Path, monkeypatch) -> None:
     assert stored_csv.read_text(encoding="utf-8-sig") == csv_content
 
 
-def test_send_csv_to_processing_manager_returns_metadata_and_rows(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
-    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
-
-    csv_content = "id,name,amount\n1,Alice,100\n2,Bob,200\n"
-    upload_response = client.post(
-        "/upload",
-        files={"file": ("sample.csv", csv_content, "text/csv")},
-        data={
-            "file_type": "csv",
-            "data_category": "company",
-            "country": "US",
-            "year": 2026,
-            "batch_name": "batch-csv",
-        },
-    )
-
-    assert upload_response.status_code == 200
-    response = client.post("/files/2026_batch-csv.csv/send-to-processing-manager")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["event"] == "csv_ready_for_processing"
-    assert payload["csv_file"]["filename"] == "2026_batch-csv.csv"
-    assert payload["csv_file"]["file_hash"] == upload_response.json()["file_hash"]
-    assert payload["csv_file"]["data_category"] == "company"
-    assert payload["included_details"] == {
-        "columns": ["id", "name", "amount"],
-        "row_count": 2,
-        "rows": [
-            {"id": "1", "name": "Alice", "amount": "100"},
-            {"id": "2", "name": "Bob", "amount": "200"},
-        ],
-    }
-
-
 def test_upload_openapi_exposes_single_file_type_enum() -> None:
     response = client.get("/openapi.json")
 
@@ -231,6 +195,7 @@ def test_upload_openapi_exposes_single_file_type_enum() -> None:
     assert "sub_file_type" not in properties
     assert response.json()["components"]["schemas"]["FileType"]["enum"] == ["json", "xml", "csv", "xlsx", "pdf", "jpg", "jpeg", "png", "gif", "webp"]
     assert response.json()["paths"]["/upload"]["post"]["tags"] == ["File Manager"]
+    assert "/files/{filename}/send-to-processing-manager" not in response.json()["paths"]
 
     parameters = response.json()["paths"]["/upload"]["post"]["parameters"]
     assert any(param["name"] == "version" and param["in"] == "query" for param in parameters)

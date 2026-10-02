@@ -56,18 +56,6 @@ class CSVFileDetails(BaseModel):
     csv_path: str
 
 
-class CSVIncludedDetails(BaseModel):
-    columns: list[str]
-    row_count: int
-    rows: list[dict[str, str]]
-
-
-class ProcessingManagerPayload(BaseModel):
-    event: Literal["csv_ready_for_processing"]
-    csv_file: CSVFileDetails
-    included_details: CSVIncludedDetails
-
-
 class ProcessingJobRequest(BaseModel):
     supplier_name: str = Field(..., min_length=1, description="Supplier or company name for the processing job.")
     country: str = Field(..., min_length=1, description="Country associated with the processing job.")

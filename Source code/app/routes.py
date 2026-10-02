@@ -2,12 +2,11 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Response, Uploa
 from fastapi.responses import FileResponse
 
 from app.config import EXTRACT_DIR, PROCESSING_MANAGER_URL
-from app.manager import load_csv_included_details, load_csv_metadata
+from app.manager import load_csv_metadata
 from app.schemas import (
     CSVFileDetails,
     DataCategory,
     FileType,
-    ProcessingManagerPayload,
     ProcessingJobRequest,
     QuarantineNotification,
     QuarantineReviewRequest,
@@ -82,26 +81,6 @@ async def upload_file(
 )
 def get_csv_file_details(filename: str) -> CSVFileDetails:
     return load_csv_metadata(filename, base_dir=EXTRACT_DIR)
-
-
-@router.post(
-    "/files/{filename}/send-to-processing-manager",
-    tags=["File Manager"],
-    response_model=ProcessingManagerPayload,
-    summary="Send CSV details to the data processing manager",
-    description=(
-        "Builds the payload for the data processing manager. It includes the stored CSV "
-        "metadata and every CSV row keyed by its column name."
-    ),
-)
-def send_csv_to_processing_manager(filename: str) -> ProcessingManagerPayload:
-    csv_file = load_csv_metadata(filename, base_dir=EXTRACT_DIR)
-    included_details = load_csv_included_details(filename, base_dir=EXTRACT_DIR)
-    return ProcessingManagerPayload(
-        event="csv_ready_for_processing",
-        csv_file=csv_file,
-        included_details=included_details,
-    )
 
 
 @router.get(
