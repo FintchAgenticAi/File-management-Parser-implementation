@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from hashlib import sha256
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from app.schemas import CSVFileDetails, DataCategory, FileProcessingContext, Fil
 
 
 _SUPPORTED_FILE_TYPES = {item.value for item in FileType}
+_logger = logging.getLogger(__name__)
 
 
 def _metadata_path_for(csv_path: Path) -> Path:
@@ -25,7 +27,8 @@ def find_existing_csv_details_by_hash(file_hash: str, base_dir: Path = EXTRACT_D
     for metadata_path in base_dir.glob("*.meta.json"):
         try:
             details = CSVFileDetails.model_validate_json(metadata_path.read_text(encoding="utf-8"))
-        except Exception:
+        except (OSError, ValueError):
+            _logger.warning("Ignoring invalid CSV metadata file: %s", metadata_path, exc_info=True)
             continue
         if details.file_hash == file_hash:
             return details
@@ -57,7 +60,10 @@ def store_csv_metadata(
 
 
 def load_csv_metadata(filename: str, base_dir: Path = EXTRACT_DIR) -> CSVFileDetails:
-    csv_path = base_dir / filename
+    base_path = base_dir.resolve()
+    csv_path = (base_path / filename).resolve()
+    if csv_path.parent != base_path:
+        raise HTTPException(status_code=400, detail="Invalid CSV filename.")
     if not csv_path.exists():
         raise HTTPException(status_code=404, detail="CSV file not found.")
 

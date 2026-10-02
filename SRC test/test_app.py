@@ -248,10 +248,11 @@ def test_quarantine_notification_contains_downloadable_export_name(tmp_path: Pat
 
     assert response.status_code == 200
     assert response.json()["notification"] == {
-        "message": "Quarantine records require review.",
+        "message": "Quarantine records require correction and review.",
         "data_batch_id": 42,
         "filename": "xport-quarantine.csv",
         "download_url": "/processing/batches/42/quarantine-export",
+        "next_step": "Download the quarantine CSV, correct the rows, review them, and re-upload the next version.",
     }
 
 
@@ -284,6 +285,7 @@ def test_quarantine_workflow_is_documented_in_openapi() -> None:
     reupload_operation = openapi["paths"]["/processing/batches/{data_batch_id}/reupload"]["post"]
 
     assert "xport-quarantine.csv" in process_operation["description"]
+    assert "correction" in process_operation["description"]
     assert "text/csv" in download_operation["responses"]["200"]["content"]
     review_schema = openapi["components"]["schemas"]["QuarantineReviewRequest"]
     assert set(review_schema["properties"]["decision"]["enum"]) == {
@@ -296,3 +298,51 @@ def test_quarantine_workflow_is_documented_in_openapi() -> None:
         for parameter in reupload_operation["parameters"]
     }
     assert "next version" in reupload_operation["description"]
+
+
+def test_upload_rejects_declared_type_mismatch(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
+
+    response = client.post(
+        "/upload",
+        files={"file": ("sample.csv", "id,name\n1,Alice\n", "text/csv")},
+        data={
+            "file_type": "json",
+            "data_category": "company",
+            "country": "US",
+            "year": 2026,
+            "batch_name": "type-mismatch",
+        },
+    )
+
+    assert response.status_code == 422
+    assert "does not match" in response.json()["detail"]
+    assert not (tmp_path / "uploads" / "2026_type-mismatch.csv").exists()
+
+
+def test_file_details_rejects_path_traversal(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+
+    response = client.get("/files/..%2Foutside.csv/details")
+
+    assert response.status_code in {400, 404}
+
+
+def test_upload_rejects_unsafe_batch_name(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
+
+    response = client.post(
+        "/upload",
+        files={"file": ("sample.csv", "id,name\n1,Alice\n", "text/csv")},
+        data={
+            "file_type": "csv",
+            "data_category": "company",
+            "country": "US",
+            "year": 2026,
+            "batch_name": "../outside",
+        },
+    )
+
+    assert response.status_code == 422

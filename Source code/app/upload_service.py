@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+import re
 from typing import Callable
 
 from fastapi import HTTPException, Response, UploadFile
@@ -48,6 +49,9 @@ class UploadService:
     ) -> UploadResponse:
         if not file.filename:
             raise HTTPException(status_code=400, detail="A filename is required.")
+        self._validate_identifier(batch_name, "batch_name")
+        if version is not None:
+            self._validate_identifier(version, "version")
 
         if extract_dir is not None:
             self.extract_dir = extract_dir
@@ -55,6 +59,11 @@ class UploadService:
         file_bytes = await file.read()
         file_hash = compute_file_hash(file_bytes)
         input_suffix = Path(file.filename).suffix.lower()
+        if input_suffix != f".{file_type.value}":
+            raise HTTPException(
+                status_code=422,
+                detail=f"File type {file_type.value} does not match uploaded file extension {input_suffix.lstrip('.')}.",
+            )
 
         self._save_original_upload(file.filename, file_bytes, year, batch_name, version)
 
@@ -165,6 +174,14 @@ class UploadService:
     def _build_output_path(self, year: int, batch_name: str, version: str | None) -> Path:
         version_suffix = f"_{version}" if version else ""
         return self.extract_dir / f"{year}_{batch_name}{version_suffix}.csv"
+
+    @staticmethod
+    def _validate_identifier(value: str, field_name: str) -> None:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", value):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{field_name} may contain only letters, numbers, dots, underscores, and hyphens.",
+            )
 
     def _save_original_upload(
         self,

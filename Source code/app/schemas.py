@@ -82,7 +82,11 @@ class QuarantineReviewRequest(BaseModel):
 
 
 class QuarantineNotification(BaseModel):
-    message: str = Field(..., description="Notification shown to the user.")
+    message: str = Field(..., description="Notification shown to the user that correction is required.")
     data_batch_id: int = Field(..., description="Processing batch containing quarantined rows.")
     filename: str = Field("xport-quarantine.csv", description="CSV file the user downloads for review.")
     download_url: str = Field(..., description="File Manager endpoint used to download the quarantine CSV.")
+    next_step: str = Field(
+        "Download the quarantine CSV, correct the rows, review them, and re-upload the next version.",
+        description="Instruction shown to the user after quarantined rows are detected.",
+    )

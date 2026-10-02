@@ -102,10 +102,11 @@ def download_csv_file(filename: str) -> FileResponse:
 @router.post(
     "/files/{filename}/process",
     tags=["File Manager"],
-    summary="Send a CSV to the Data Processing Manager",
+    summary="Process CSV and notify user when correction is required",
     description=(
         "Starts processing for a stored CSV. If invalid rows are found, the response includes "
-        "a notification with the xport-quarantine.csv download URL and data batch ID."
+        "a notification telling the user that correction is required: download xport-quarantine.csv, correct and review "
+        "the quarantined rows, then re-upload the reviewed CSV as the next version."
     ),
     responses={
         200: {
@@ -116,10 +117,11 @@ def download_csv_file(filename: str) -> FileResponse:
                         "data_batch_id": 42,
                         "quarantine_count": 1,
                         "notification": {
-                            "message": "Quarantine records require review.",
+                            "message": "Quarantine records require correction and review.",
                             "data_batch_id": 42,
                             "filename": "xport-quarantine.csv",
                             "download_url": "/processing/batches/42/quarantine-export",
+                            "next_step": "Download the quarantine CSV, correct the rows, review them, and re-upload the next version.",
                         },
                     }
                 }
@@ -138,7 +140,7 @@ async def process_csv_from_file_manager(
     if int(result.get("quarantine_count", 0)) > 0:
         batch_id = int(result["data_batch_id"])
         result["notification"] = QuarantineNotification(
-            message="Quarantine records require review.",
+            message="Quarantine records require correction and review.",
             data_batch_id=batch_id,
             filename="xport-quarantine.csv",
             download_url=f"/processing/batches/{batch_id}/quarantine-export",
