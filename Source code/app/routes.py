@@ -2,7 +2,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Response, Uploa
 from fastapi.responses import FileResponse
 
 from app.config import EXTRACT_DIR, PROCESSING_MANAGER_URL
-from app.manager import load_csv_metadata, update_csv_metadata_batch_id
+from app.database import DatabaseError, ensure_supplier_and_batch
+from app.manager import load_csv_metadata
 from app.schemas import (
     CSVFileDetails,
     CSVFileDetailsResponse,
@@ -54,6 +55,7 @@ async def upload_file(
     file: UploadFile = File(..., description="The source file to convert into CSV."),
     file_type: FileType = Form(..., description="Input file format to convert: json, xml, xls, xlsx, csv, pdf, jpg, jpeg, png, gif, or webp."),
     data_category: DataCategory = Form(..., description="Business category for the uploaded file."),
+    supplier_name: str = Form(..., description="Supplier name stored in the shared Data Processing database."),
     country: str = Form(..., description="Country associated with the uploaded file."),
     year: int = Form(..., ge=1900, le=2100, description="Business year for the data."),
     batch_name: str = Form(..., description="Batch name for grouping the data."),
@@ -65,6 +67,7 @@ async def upload_file(
         file=file,
         file_type=file_type,
         data_category=data_category,
+        supplier_name=supplier_name,
         country=country,
         year=year,
         batch_name=batch_name,
@@ -136,17 +139,23 @@ async def process_csv_from_file_manager(
     request: ProcessingJobRequest,
 ) -> dict[str, object]:
     details = load_csv_metadata(filename, base_dir=EXTRACT_DIR)
+    version = _version_from_filename(details.filename)
+    try:
+        batch = ensure_supplier_and_batch(
+            request.supplier_name,
+            details.batch_name,
+            request.country,
+            version,
+        )
+    except DatabaseError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     result = await processing_manager.process_csv(
         details.filename,
         request.supplier_name,
         request.country,
+        data_batch_id=batch.data_batch_id,
     )
-    if "data_batch_id" in result:
-        update_csv_metadata_batch_id(
-            details.filename,
-            int(result["data_batch_id"]),
-            base_dir=EXTRACT_DIR,
-        )
+    result["data_batch_id"] = batch.data_batch_id
     if int(result.get("quarantine_count", 0)) > 0:
         batch_id = int(result["data_batch_id"])
         result["notification"] = QuarantineNotification(
@@ -235,3 +244,9 @@ async def reupload_processing_csv(
     if not file.filename or file.filename.lower().split(".")[-1] != "csv":
         raise HTTPException(status_code=422, detail="Only CSV files can be re-uploaded.")
     return await processing_manager.reupload_csv(data_batch_id, file, next_version=current_version + 1)
+
+
+def _version_from_filename(filename: str) -> int:
+    stem = filename.rsplit(".", 1)[0]
+    suffix = stem.rsplit("_", 1)[-1]
+    return int(suffix[1:]) if suffix.lower().startswith("v") and suffix[1:].isdigit() else 1

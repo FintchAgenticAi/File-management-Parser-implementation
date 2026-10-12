@@ -15,15 +15,19 @@ class ProcessingManagerClient:
         filename: str,
         supplier_name: str,
         country: str,
+        data_batch_id: int | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "csv_filename": filename,
+            "supplier_name": supplier_name,
+            "country": country,
+        }
+        if data_batch_id is not None:
+            payload["data_batch_id"] = data_batch_id
         return await self._request_json(
             "POST",
             "/processing/jobs",
-            json={
-                "csv_filename": filename,
-                "supplier_name": supplier_name,
-                "country": country,
-            },
+            json=payload,
         )
 
     async def download_quarantine_export(self, data_batch_id: int) -> httpx.Response:

@@ -8,12 +8,11 @@ from typing import Callable
 from fastapi import HTTPException, Response, UploadFile
 
 from app.config import EXTRACT_DIR, UPLOAD_DIR
+from app.database import DatabaseError, ensure_supplier_and_batch
 from app.manager import (
     compute_file_hash,
-    data_batch_id_for,
     find_existing_csv_details_by_hash,
     resolve_processing_plan,
-    store_csv_metadata,
 )
 from app.schemas import (
     CSVFileDetails,
@@ -42,6 +41,7 @@ class UploadService:
         file: UploadFile,
         file_type: FileType,
         data_category: DataCategory,
+        supplier_name: str,
         country: str,
         year: int,
         batch_name: str,
@@ -51,6 +51,7 @@ class UploadService:
         if not file.filename:
             raise HTTPException(status_code=400, detail="A filename is required.")
         self._validate_identifier(batch_name, "batch_name")
+        self._validate_identifier(supplier_name, "supplier_name")
         if version is not None:
             self._validate_identifier(version, "version")
 
@@ -74,7 +75,10 @@ class UploadService:
             return self._build_response_from_details(existing_details)
 
         if input_suffix == ".csv":
-            return self._save_csv_file(response, file, file_bytes, file_hash, file_type, data_category, country, year, batch_name, version)
+            return self._save_csv_file(
+                response, file, file_bytes, file_hash, file_type, data_category,
+                supplier_name, country, year, batch_name, version,
+            )
 
         return await self._convert_and_store_file(
             response,
@@ -83,6 +87,7 @@ class UploadService:
             file_hash,
             file_type,
             data_category,
+            supplier_name,
             country,
             year,
             batch_name,
@@ -98,6 +103,7 @@ class UploadService:
         file_hash: str,
         file_type: FileType,
         data_category: DataCategory,
+        supplier_name: str,
         country: str,
         year: int,
         batch_name: str,
@@ -107,14 +113,15 @@ class UploadService:
         self.extract_dir.mkdir(parents=True, exist_ok=True)
         csv_path = self._build_output_path(year, batch_name, version)
         csv_path.write_bytes(file_bytes)
+        batch = self._save_batch(supplier_name, batch_name, country, version)
 
-        store_csv_metadata(csv_path, file.filename, context, "file_manager", file_hash)
         response.status_code = 200
         return self._build_processing_response(
             message="file already csv, saved directly",
             output_file=csv_path.name,
             context=context,
             file_hash=file_hash,
+            data_batch_id=batch.data_batch_id,
         )
 
     async def _convert_and_store_file(
@@ -125,6 +132,7 @@ class UploadService:
         file_hash: str,
         file_type: FileType,
         data_category: DataCategory,
+        supplier_name: str,
         country: str,
         year: int,
         batch_name: str,
@@ -154,14 +162,42 @@ class UploadService:
         finally:
             temp_path.unlink(missing_ok=True)
 
-        store_csv_metadata(csv_path, file.filename, context, processing_plan["processor"], file_hash)
+        batch = self._save_batch(supplier_name, batch_name, country, version)
         response.status_code = 201
         return self._build_processing_response(
             message="file converted successfully",
             output_file=csv_path.name,
             context=context,
             file_hash=file_hash,
+            data_batch_id=batch.data_batch_id,
         )
+
+    @staticmethod
+    def _save_batch(
+        supplier_name: str,
+        batch_name: str,
+        country: str,
+        version: str | None,
+    ):
+        try:
+            return ensure_supplier_and_batch(
+                supplier_name=supplier_name,
+                batch_name=batch_name,
+                country=country,
+                version=UploadService._version_number(version),
+            )
+        except DatabaseError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @staticmethod
+    def _version_number(version: str | None) -> int:
+        if version is None:
+            return 1
+        if version.lower().startswith("v") and version[1:].isdigit():
+            return int(version[1:])
+        if version.isdigit():
+            return int(version)
+        raise HTTPException(status_code=422, detail="version must be an integer or use the vN format.")
 
     def _build_context(self, file_type: FileType, data_category: DataCategory, country: str, year: int, batch_name: str) -> FileProcessingContext:
         return FileProcessingContext(
@@ -221,12 +257,13 @@ class UploadService:
         output_file: str,
         context: FileProcessingContext,
         file_hash: str,
+        data_batch_id: int | None = None,
     ) -> UploadResponse:
         return UploadResponse(
             message=message,
             output_file=output_file,
             file_hash=file_hash,
-            data_batch_id=None,
+            data_batch_id=data_batch_id,
             file_type=context.file_type,
             data_category=context.data_category,
             country=context.country,

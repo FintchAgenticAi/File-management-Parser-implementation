@@ -47,12 +47,12 @@ class UploadResponse(BaseModel):
 
 class CSVFileDetails(BaseModel):
     filename: str
-    original_filename: str
+    original_filename: str | None = None
     data_batch_id: int | None = Field(default=None, ge=1)
     processor: str | None = None
     file_hash: str | None = None
     file_type: FileType
-    data_category: DataCategory
+    data_category: DataCategory | None = None
     country: str | None = None
     year: int
     batch_name: str
@@ -61,11 +61,11 @@ class CSVFileDetails(BaseModel):
 
 class CSVFileDetailsResponse(BaseModel):
     filename: str
-    original_filename: str
+    original_filename: str | None = None
     data_batch_id: int | None = Field(default=None, ge=1)
     file_hash: str | None = None
     file_type: FileType
-    data_category: DataCategory
+    data_category: DataCategory | None = None
     country: str | None = None
     year: int
     batch_name: str
