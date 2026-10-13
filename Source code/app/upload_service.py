@@ -8,10 +8,9 @@ from typing import Callable
 from fastapi import HTTPException, Response, UploadFile
 
 from app.config import EXTRACT_DIR, UPLOAD_DIR
-from app.database import DatabaseError, ensure_supplier_and_batch
+from app.database import DatabaseError, ensure_supplier_and_batch ,find_existing_csv_details_by_hash
 from app.manager import (
     compute_file_hash,
-    find_existing_csv_details_by_hash,
     resolve_processing_plan,
 )
 from app.schemas import (
@@ -72,13 +71,29 @@ class UploadService:
         existing_details = find_existing_csv_details_by_hash(file_hash, base_dir=self.extract_dir)
         if existing_details is not None:
             response.status_code = 409
-            return self._build_response_from_details(existing_details)
+            print(existing_details)
+            return self._build_response_from_details(
+                CSVFileDetails(
+                    filename = str(self._build_output_filename( existing_details.year, existing_details.batch_name, existing_details.version)),
+                    file_hash=file_hash,
+                    data_batch_id=existing_details.data_batch_id,
+                    data_category=existing_details.data_category,
+                    country=existing_details.country,
+                    year=existing_details.year,
+                    batch_name=existing_details.batch_name,
+                    file_type=file_type,
+                    csv_path="",
+                )
+            )
+
 
         if input_suffix == ".csv":
             return self._save_csv_file(
                 response, file, file_bytes, file_hash, file_type, data_category,
                 supplier_name, country, year, batch_name, version,
             )
+
+
 
         return await self._convert_and_store_file(
             response,
@@ -162,7 +177,7 @@ class UploadService:
         finally:
             temp_path.unlink(missing_ok=True)
 
-        batch = self._save_batch(supplier_name, batch_name, country, version)
+        batch = self._save_batch(supplier_name, batch_name, country, version , data_category, year , file_hash)
         response.status_code = 201
         return self._build_processing_response(
             message="file converted successfully",
@@ -178,6 +193,9 @@ class UploadService:
         batch_name: str,
         country: str,
         version: str | None,
+        data_category: str,
+        year: int,
+        file_hash : str,
     ):
         try:
             return ensure_supplier_and_batch(
@@ -185,6 +203,9 @@ class UploadService:
                 batch_name=batch_name,
                 country=country,
                 version=UploadService._version_number(version),
+                data_category=data_category,
+                year=year,
+                file_hash=file_hash,
             )
         except DatabaseError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -207,6 +228,10 @@ class UploadService:
             year=year,
             batch_name=batch_name,
         )
+        
+    def _build_output_filename(self, year: int, batch_name: str, version: str | None) -> str:
+        version_suffix = f"_{version}" if version else ""
+        return f"{year}_{batch_name}{version_suffix}.csv"
 
     def _build_output_path(self, year: int, batch_name: str, version: str | None) -> Path:
         version_suffix = f"_{version}" if version else ""
