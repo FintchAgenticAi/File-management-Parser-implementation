@@ -69,12 +69,19 @@ class UploadService:
         self._save_original_upload(file.filename, file_bytes, year, batch_name, version)
 
         existing_details = find_existing_csv_details_by_hash(file_hash, base_dir=self.extract_dir)
-        if existing_details is not None:
+        existing_filename = (
+            self._find_existing_output_filename(
+                existing_details.year, existing_details.batch_name, existing_details.version
+            )
+            if existing_details is not None
+            else None
+        )
+        # If the CSV is no longer on disk, fall through and regenerate it.
+        if existing_details is not None and existing_filename is not None:
             response.status_code = 409
-            print(existing_details)
             return self._build_response_from_details(
                 CSVFileDetails(
-                    filename = str(self._build_output_filename( existing_details.year, existing_details.batch_name, existing_details.version)),
+                    filename=existing_filename,
                     file_hash=file_hash,
                     data_batch_id=existing_details.data_batch_id,
                     data_category=existing_details.data_category,
@@ -230,12 +237,28 @@ class UploadService:
         )
         
     def _build_output_filename(self, year: int, batch_name: str, version: str | None) -> str:
-        version_suffix = f"_{version}" if version else ""
-        return f"{year}_{batch_name}{version_suffix}.csv"
+        return f"{year}_{batch_name}{self._version_suffix(version)}.csv"
+
+    @staticmethod
+    def _version_suffix(version: str | None) -> str:
+        return f"_V{UploadService._version_number(version)}" if version else ""
+
+    def _find_existing_output_filename(self, year: int, batch_name: str, version: int) -> str | None:
+        # The DB stores version as an int; files are named with "vN" or no suffix.
+        candidates = [
+            f"{year}_{batch_name}_V{version}.csv",
+            f"{year}_{batch_name}_v{version}.csv",
+            f"{year}_{batch_name}_{version}.csv",
+        ]
+        if version == 1:
+            candidates.append(f"{year}_{batch_name}.csv")
+        for name in candidates:
+            if (self.extract_dir / name).is_file():
+                return name
+        return None
 
     def _build_output_path(self, year: int, batch_name: str, version: str | None) -> Path:
-        version_suffix = f"_{version}" if version else ""
-        return self.extract_dir / f"{year}_{batch_name}{version_suffix}.csv"
+        return self.extract_dir / self._build_output_filename(year, batch_name, version)
 
     @staticmethod
     def _validate_identifier(value: str, field_name: str) -> None:
@@ -257,7 +280,7 @@ class UploadService:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
 
         safe_name = Path(original_filename).name
-        version_suffix = f"_{version}" if version else ""
+        version_suffix = self._version_suffix(version)
         file_suffix = Path(safe_name).suffix.lower() or ".bin"
         uploaded_path = self.upload_dir / f"{year}_{batch_name}{version_suffix}{file_suffix}"
         uploaded_path.write_bytes(file_bytes)
