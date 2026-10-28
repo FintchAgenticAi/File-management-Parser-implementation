@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app import routes
+from app import database, routes
+from app.schemas import CSVFileDetails, DataCategory, FileType
 
 client = TestClient(app)
 
@@ -180,9 +182,21 @@ def test_duplicate_upload_returns_existing_csv(tmp_path: Path, monkeypatch) -> N
 
 
 def test_upload_csv_skips_conversion(tmp_path: Path, monkeypatch) -> None:
+    saved_batch_args: list[object] = []
+
     monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
     monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
     monkeypatch.setattr(routes, "_get_converter", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("converter should not run for CSV input")))
+
+    def save_batch(*args, **_kwargs):
+        saved_batch_args.extend(args)
+        return SimpleNamespace(data_batch_id=None)
+
+    monkeypatch.setattr(
+        routes.upload_service,
+        "_save_batch",
+        save_batch,
+    )
 
     csv_content = "id,name,amount\n1,Alice,100\n2,Bob,200\n3,Charlie,300\n"
     response = client.post(
@@ -191,6 +205,7 @@ def test_upload_csv_skips_conversion(tmp_path: Path, monkeypatch) -> None:
         data={
             "file_type": "csv",
             "data_category": "company",
+            "supplier_name": "test-supplier",
             "country": "US",
             "year": 2026,
             "batch_name": "batch-csv",
@@ -199,7 +214,7 @@ def test_upload_csv_skips_conversion(tmp_path: Path, monkeypatch) -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["message"] == "file already csv, saved directly"
+    assert payload["message"] == "File is already CSV, saved directly."
     assert payload["output_file"] == "2026_batch-csv.csv"
     assert "sub_file_type" not in payload
     assert payload["file_type"] == "csv"
@@ -210,6 +225,81 @@ def test_upload_csv_skips_conversion(tmp_path: Path, monkeypatch) -> None:
     stored_csv = tmp_path / "2026_batch-csv.csv"
     assert stored_csv.exists()
     assert stored_csv.read_text(encoding="utf-8-sig") == csv_content
+    assert list(tmp_path.rglob("*.json")) == []
+    assert saved_batch_args[-1] is FileType.csv
+
+
+def test_database_adds_file_type_column_when_missing(monkeypatch) -> None:
+    class Cursor:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, statement: str) -> None:
+            self.statements.append(statement)
+
+        def fetchone(self):
+            return None
+
+    cursor = Cursor()
+    database._ensure_file_type_column(cursor)
+
+    assert cursor.statements == [
+        "SHOW COLUMNS FROM data_batch LIKE 'file_type'",
+        "ALTER TABLE data_batch ADD COLUMN file_type VARCHAR(16) NULL",
+    ]
+
+
+def test_database_saves_uploaded_file_type(monkeypatch) -> None:
+    class Cursor:
+        lastrowid = 42
+
+        def __init__(self) -> None:
+            self.results = [None, {"supplier_id": 7}, None]
+            self.statements: list[tuple[str, tuple[object, ...] | None]] = []
+
+        def execute(self, statement: str, params=None) -> None:
+            self.statements.append((statement, params))
+
+        def fetchone(self):
+            return self.results.pop(0)
+
+        def close(self) -> None:
+            pass
+
+    class Connection:
+        def __init__(self) -> None:
+            self.db_cursor = Cursor()
+
+        def cursor(self, **_kwargs):
+            return self.db_cursor
+
+        def commit(self) -> None:
+            pass
+
+        def rollback(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    connection = Connection()
+    monkeypatch.setattr(database, "_connect", lambda: connection)
+
+    batch = database.ensure_supplier_and_batch(
+        supplier_name="Acme",
+        batch_name="reports",
+        country="US",
+        version=1,
+        data_category="company",
+        year=2026,
+        file_hash="hash",
+        file_type="xlsx",
+    )
+
+    assert batch.file_type == "xlsx"
+    insert_params = connection.db_cursor.statements[-1][1]
+    assert insert_params is not None
+    assert insert_params[-1] == "xlsx"
 
 
 def test_upload_openapi_exposes_single_file_type_enum() -> None:
@@ -258,12 +348,26 @@ def test_csv_details_response_excludes_processor(tmp_path: Path, monkeypatch) ->
 def test_quarantine_notification_contains_downloadable_export_name(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
     (tmp_path / "2026_batch-csv.csv").write_text("id,name\n1,Alice\n", encoding="utf-8")
-    (tmp_path / "2026_batch-csv.meta.json").write_text(
-        '{"filename":"2026_batch-csv.csv","original_filename":"sample.csv",'
-        '"processor":"file_manager","file_hash":"hash","file_type":"csv",'
-        '"data_category":"company","country":"US","year":2026,'
-        '"batch_name":"batch-csv","csv_path":"2026_batch-csv.csv"}',
-        encoding="utf-8",
+    monkeypatch.setattr(
+        routes,
+        "load_csv_metadata",
+        lambda *_args, **_kwargs: CSVFileDetails(
+            filename="2026_batch-csv.csv",
+            original_filename=None,
+            data_batch_id=42,
+            file_hash="hash",
+            file_type=FileType.csv,
+            data_category=DataCategory.company,
+            country="US",
+            year=2026,
+            batch_name="batch-csv",
+            csv_path=str(tmp_path / "2026_batch-csv.csv"),
+        ),
+    )
+    monkeypatch.setattr(
+        routes,
+        "ensure_supplier_and_batch",
+        lambda **_kwargs: SimpleNamespace(data_batch_id=42),
     )
 
     async def process_csv(*_args, **_kwargs):
@@ -283,7 +387,6 @@ def test_quarantine_notification_contains_downloadable_export_name(tmp_path: Pat
         "download_url": "/processing/batches/42/quarantine-export",
         "next_step": "Download the quarantine CSV, correct the rows, review them, and re-upload the next version.",
     }
-    assert '"data_batch_id": 42' in (tmp_path / "2026_batch-csv.meta.json").read_text(encoding="utf-8")
 
 
 def test_reupload_passes_current_version_plus_one_to_processing_manager(monkeypatch) -> None:

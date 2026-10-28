@@ -44,11 +44,12 @@ def load_csv_metadata(filename: str, base_dir: Path = EXTRACT_DIR) -> CSVFileDet
         filename=csv_path.name,
         original_filename=None,
         data_batch_id=batch.data_batch_id if batch else None,
-        file_type=FileType.csv,
-        data_category=None,
+        file_type=FileType(batch.file_type) if batch and batch.file_type else FileType.csv,
+        data_category=DataCategory(batch.data_category) if batch else None,
         country=batch.country if batch else None,
         year=int(parts[0]),
         batch_name=batch.batch_name if batch else batch_name,
+        file_hash=batch.file_hash if batch else None,
         csv_path=str(csv_path),
     )
 

@@ -68,7 +68,11 @@ class UploadService:
 
         self._save_original_upload(file.filename, file_bytes, year, batch_name, version)
 
-        existing_details = find_existing_csv_details_by_hash(file_hash, base_dir=self.extract_dir)
+        existing_details = find_existing_csv_details_by_hash(
+            file_hash,
+            file_type.value,
+            base_dir=self.extract_dir,
+        )
         existing_filename = (
             self._find_existing_output_filename(
                 existing_details.year, existing_details.batch_name, existing_details.version
@@ -94,7 +98,7 @@ class UploadService:
             )
 
 
-        if input_suffix == ".csv":
+        if file_type is FileType.csv:
             return self._save_csv_file(
                 response, file, file_bytes, file_hash, file_type, data_category,
                 supplier_name, country, year, batch_name, version,
@@ -135,11 +139,24 @@ class UploadService:
         self.extract_dir.mkdir(parents=True, exist_ok=True)
         csv_path = self._build_output_path(year, batch_name, version)
         csv_path.write_bytes(file_bytes)
-        batch = self._save_batch(supplier_name, batch_name, country, version)
+        try:
+            batch = self._save_batch(
+                supplier_name,
+                batch_name,
+                country,
+                version,
+                data_category.value,
+                year,
+                file_hash,
+                file_type,
+            )
+        except HTTPException:
+            csv_path.unlink(missing_ok=True)
+            raise
 
         response.status_code = 200
         return self._build_processing_response(
-            message="file already csv, saved directly",
+            message="File is already CSV, saved directly.",
             output_file=csv_path.name,
             context=context,
             file_hash=file_hash,
@@ -184,7 +201,16 @@ class UploadService:
         finally:
             temp_path.unlink(missing_ok=True)
 
-        batch = self._save_batch(supplier_name, batch_name, country, version , data_category, year , file_hash)
+        batch = self._save_batch(
+            supplier_name,
+            batch_name,
+            country,
+            version,
+            data_category.value,
+            year,
+            file_hash,
+            file_type,
+        )
         response.status_code = 201
         return self._build_processing_response(
             message="file converted successfully",
@@ -202,7 +228,8 @@ class UploadService:
         version: str | None,
         data_category: str,
         year: int,
-        file_hash : str,
+        file_hash: str,
+        file_type: FileType,
     ):
         try:
             return ensure_supplier_and_batch(
@@ -213,6 +240,7 @@ class UploadService:
                 data_category=data_category,
                 year=year,
                 file_hash=file_hash,
+                file_type=file_type.value,
             )
         except DatabaseError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc

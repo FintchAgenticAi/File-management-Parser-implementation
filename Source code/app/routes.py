@@ -36,7 +36,7 @@ def health_check() -> dict[str, str]:
 @router.post(
     "/upload",
     tags=["File Manager"],
-    status_code=201,
+    status_code=200,
     response_description="Created",
     responses={
         200: {"description": "OK - CSV file saved directly"},
@@ -57,7 +57,7 @@ async def upload_file(
     data_category: DataCategory = Form(..., description="Business category for the uploaded file."),
     supplier_name: str = Form(..., description="Supplier name stored in the shared Data Processing database."),
     country: str = Form(..., description="Country associated with the uploaded file."),
-    year: int = Form(..., ge=1900, le=2100, description="Business year for the data."),
+    year: int = Form(..., ge=1901, le=2155, description="Business year for the data."),
     batch_name: str = Form(..., description="Batch name for grouping the data."),
 ) -> UploadResponse:
     upload_service.extract_dir = EXTRACT_DIR
@@ -140,12 +140,18 @@ async def process_csv_from_file_manager(
 ) -> dict[str, object]:
     details = load_csv_metadata(filename, base_dir=EXTRACT_DIR)
     version = _version_from_filename(details.filename)
+    if details.data_category is None:
+        raise HTTPException(status_code=422, detail="Batch metadata is incomplete.")
     try:
         batch = ensure_supplier_and_batch(
-            request.supplier_name,
-            details.batch_name,
-            request.country,
-            version,
+            supplier_name=request.supplier_name,
+            batch_name=details.batch_name,
+            country=request.country,
+            version=version,
+            data_category=details.data_category.value,
+            year=details.year,
+            file_hash=details.file_hash,
+            file_type=details.file_type.value,
         )
     except DatabaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
