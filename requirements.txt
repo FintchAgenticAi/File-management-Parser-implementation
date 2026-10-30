@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-multipart
+httpx
+mysql-connector-python
+pdfplumber
+pandas
+openpyxl
+xlrd
+pytest

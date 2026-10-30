@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and secrets
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Generated file-manager output
+Source code/Output/
+
+# Nested local clone used only for Git metadata
+File-management-Parser-implementation/
