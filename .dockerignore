@@ -1,0 +1,20 @@
+.venv/
+.venv-1/
+venv/
+env/
+.git/
+.gitignore
+.vscode/
+.idea/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
+SRC test/
+File-management-Parser-implementation/
+Source code/Output/
+*.log
+Makefile
+makefile
