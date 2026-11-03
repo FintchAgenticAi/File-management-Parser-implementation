@@ -36,6 +36,7 @@ class FileProcessingContext(BaseModel):
 class UploadResponse(BaseModel):
     message: str
     output_file: str
+    original_filename: str | None = None
     file_hash: str
     data_batch_id: int | None = None
     file_type: FileType

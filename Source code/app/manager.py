@@ -28,8 +28,6 @@ def load_csv_metadata(filename: str, base_dir: Path = EXTRACT_DIR) -> CSVFileDet
     csv_path = (base_path / filename).resolve()
     if csv_path.parent != base_path:
         raise HTTPException(status_code=400, detail="Invalid CSV filename.")
-    if not csv_path.exists():
-        raise HTTPException(status_code=404, detail="CSV file not found.")
 
     stem = csv_path.stem
     parts = stem.split("_")
@@ -40,14 +38,17 @@ def load_csv_metadata(filename: str, base_dir: Path = EXTRACT_DIR) -> CSVFileDet
         batch = get_batch_for_file(csv_path.name)
     except DatabaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not csv_path.exists() and batch is None:
+        raise HTTPException(status_code=404, detail="CSV file or batch details not found.")
+
     return CSVFileDetails(
         filename=csv_path.name,
-        original_filename=None,
+        original_filename=batch.original_filename if batch else None,
         data_batch_id=batch.data_batch_id if batch else None,
         file_type=FileType(batch.file_type) if batch and batch.file_type else FileType.csv,
         data_category=DataCategory(batch.data_category) if batch else None,
         country=batch.country if batch else None,
-        year=int(parts[0]),
+        year=batch.year if batch else int(parts[0]),
         batch_name=batch.batch_name if batch else batch_name,
         file_hash=batch.file_hash if batch else None,
         csv_path=str(csv_path),

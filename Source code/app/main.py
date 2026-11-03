@@ -1,6 +1,11 @@
+import logging
+
 from fastapi import FastAPI
 
+from app.database import DatabaseError, ensure_schema
 from app.routes import router
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="File Management Converter API",
@@ -13,3 +18,11 @@ app = FastAPI(
 )
 
 app.include_router(router)
+
+
+@app.on_event("startup")
+def prepare_database() -> None:
+    try:
+        ensure_schema()
+    except DatabaseError:
+        logger.exception("Database schema check failed at startup")

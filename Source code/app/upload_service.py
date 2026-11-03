@@ -8,7 +8,12 @@ from typing import Callable
 from fastapi import HTTPException, Response, UploadFile
 
 from app.config import EXTRACT_DIR, UPLOAD_DIR
-from app.database import DatabaseError, ensure_supplier_and_batch ,find_existing_csv_details_by_hash
+from app.database import (
+    DatabaseError,
+    ensure_supplier_and_batch,
+    find_batch_by_output_name,
+    find_existing_csv_details_by_hash,
+)
 from app.manager import (
     compute_file_hash,
     resolve_processing_plan,
@@ -66,11 +71,8 @@ class UploadService:
                 detail=f"File type {file_type.value} does not match uploaded file extension {input_suffix.lstrip('.')}.",
             )
 
-        self._save_original_upload(file.filename, file_bytes, year, batch_name, version)
-
         existing_details = find_existing_csv_details_by_hash(
             file_hash,
-            file_type.value,
             base_dir=self.extract_dir,
         )
         existing_filename = (
@@ -80,8 +82,13 @@ class UploadService:
             if existing_details is not None
             else None
         )
-        # If the CSV is no longer on disk, fall through and regenerate it.
-        if existing_details is not None and existing_filename is not None:
+        if existing_details is not None:
+            if existing_filename is None:
+                existing_filename = self._build_output_filename(
+                    existing_details.year,
+                    existing_details.batch_name,
+                    f"v{existing_details.version}",
+                )
             response.status_code = 409
             return self._build_response_from_details(
                 CSVFileDetails(
@@ -92,11 +99,26 @@ class UploadService:
                     country=existing_details.country,
                     year=existing_details.year,
                     batch_name=existing_details.batch_name,
+                    original_filename=existing_details.original_filename,
                     file_type=file_type,
                     csv_path="",
                 )
             )
 
+        try:
+            name_owner = find_batch_by_output_name(year, batch_name, self._version_number(version))
+        except DatabaseError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if name_owner is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A different file is already stored as {year}_{batch_name} version {name_owner.version} "
+                    f"(data_batch_id {name_owner.data_batch_id}). Use a new version or batch name."
+                ),
+            )
+
+        self._save_original_upload(file.filename, file_bytes, year, batch_name, version)
 
         if file_type is FileType.csv:
             return self._save_csv_file(
@@ -149,6 +171,8 @@ class UploadService:
                 year,
                 file_hash,
                 file_type,
+                original_filename=file.filename,
+                output_filename=csv_path.name,
             )
         except HTTPException:
             csv_path.unlink(missing_ok=True)
@@ -161,6 +185,7 @@ class UploadService:
             context=context,
             file_hash=file_hash,
             data_batch_id=batch.data_batch_id,
+            original_filename=file.filename,
         )
 
     async def _convert_and_store_file(
@@ -210,6 +235,8 @@ class UploadService:
             year,
             file_hash,
             file_type,
+            original_filename=file.filename,
+            output_filename=csv_path.name,
         )
         response.status_code = 201
         return self._build_processing_response(
@@ -218,6 +245,7 @@ class UploadService:
             context=context,
             file_hash=file_hash,
             data_batch_id=batch.data_batch_id,
+            original_filename=file.filename,
         )
 
     @staticmethod
@@ -230,6 +258,8 @@ class UploadService:
         year: int,
         file_hash: str,
         file_type: FileType,
+        original_filename: str | None = None,
+        output_filename: str | None = None,
     ):
         try:
             return ensure_supplier_and_batch(
@@ -241,6 +271,8 @@ class UploadService:
                 year=year,
                 file_hash=file_hash,
                 file_type=file_type.value,
+                original_filename=original_filename,
+                output_filename=output_filename,
             )
         except DatabaseError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -314,10 +346,36 @@ class UploadService:
         uploaded_path.write_bytes(file_bytes)
         return uploaded_path
 
+    def restore_csv_from_original(self, details: CSVFileDetails) -> Path | None:
+        target_path = self.extract_dir / details.filename
+        if target_path.is_file():
+            return target_path
+        if details.file_hash is None or not self.upload_dir.is_dir():
+            return None
+
+        for original_path in self.upload_dir.iterdir():
+            if not original_path.is_file() or original_path.suffix.lower() != f".{details.file_type.value}":
+                continue
+            if compute_file_hash(original_path.read_bytes()) != details.file_hash:
+                continue
+
+            self.extract_dir.mkdir(parents=True, exist_ok=True)
+            if details.file_type is FileType.csv:
+                target_path.write_bytes(original_path.read_bytes())
+            else:
+                converter = self.converter_resolver(original_path.name)
+                converted_path = converter(original_path, output_dir=self.extract_dir)
+                if converted_path != target_path:
+                    converted_path.replace(target_path)
+
+            return target_path if target_path.is_file() else None
+        return None
+
     def _build_response_from_details(self, details: CSVFileDetails) -> UploadResponse:
         return UploadResponse(
-            message="uploaded this file before",
+            message="File already uploaded.",
             output_file=details.filename,
+            original_filename=details.original_filename,
             file_hash=details.file_hash or "",
             data_batch_id=details.data_batch_id,
             file_type=details.file_type,
@@ -334,10 +392,12 @@ class UploadService:
         context: FileProcessingContext,
         file_hash: str,
         data_batch_id: int | None = None,
+        original_filename: str | None = None,
     ) -> UploadResponse:
         return UploadResponse(
             message=message,
             output_file=output_file,
+            original_filename=original_filename,
             file_hash=file_hash,
             data_batch_id=data_batch_id,
             file_type=context.file_type,

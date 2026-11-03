@@ -9,7 +9,8 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app import database, routes
+from app import database, manager, routes
+from app import upload_service as upload_service_module
 from app.schemas import CSVFileDetails, DataCategory, FileType
 
 client = TestClient(app)
@@ -177,8 +178,84 @@ def test_duplicate_upload_returns_existing_csv(tmp_path: Path, monkeypatch) -> N
 
     first_payload = first_response.json()
     second_payload = second_response.json()
-    assert second_payload["message"] == "uploaded this file before"
+    assert second_payload["message"] == "File already uploaded."
     assert second_payload["output_file"] == first_payload["output_file"]
+
+
+def test_duplicate_upload_returns_conflict_when_csv_is_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
+    existing_batch = database.DataBatchRecord(
+        data_batch_id=17,
+        supplier_id=15,
+        batch_name="AAA",
+        country="SL",
+        created_at=None,
+        version=1,
+        data_category="financial",
+        year=1902,
+        file_hash="duplicate-hash",
+        file_type="xlsx",
+    )
+    monkeypatch.setattr(
+        upload_service_module,
+        "find_existing_csv_details_by_hash",
+        lambda *_args, **_kwargs: existing_batch,
+    )
+
+    response = client.post(
+        "/upload?version=v1",
+        files={"file": ("duplicate.xlsx", b"duplicate content", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        data={
+            "file_type": "xlsx",
+            "data_category": "financial",
+            "supplier_name": "keggle",
+            "country": "UK",
+            "year": 1901,
+            "batch_name": "ASD",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["message"] == "File already uploaded."
+    assert response.json()["output_file"] == "1902_AAA_V1.csv"
+    assert not (tmp_path / "1901_ASD_V1.csv").exists()
+
+
+def test_different_file_with_same_output_name_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", tmp_path / "uploads")
+    owner = database.DataBatchRecord(
+        data_batch_id=19,
+        supplier_id=15,
+        batch_name="ASD",
+        country="UK",
+        created_at=None,
+        version=1,
+        data_category="financial",
+        year=1901,
+        file_hash="other-hash",
+        file_type="xlsx",
+    )
+    monkeypatch.setattr(upload_service_module, "find_existing_csv_details_by_hash", lambda *_a, **_k: None)
+    monkeypatch.setattr(upload_service_module, "find_batch_by_output_name", lambda *_a, **_k: owner)
+
+    response = client.post(
+        "/upload?version=v1",
+        files={"file": ("new.xlsx", b"different content", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        data={
+            "file_type": "xlsx",
+            "data_category": "financial",
+            "supplier_name": "keggle",
+            "country": "UK",
+            "year": 1901,
+            "batch_name": "ASD",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "data_batch_id 19" in response.json()["detail"]
+    assert not (tmp_path / "uploads").exists()
 
 
 def test_upload_csv_skips_conversion(tmp_path: Path, monkeypatch) -> None:
@@ -254,7 +331,7 @@ def test_database_saves_uploaded_file_type(monkeypatch) -> None:
         lastrowid = 42
 
         def __init__(self) -> None:
-            self.results = [None, {"supplier_id": 7}, None]
+            self.results = [None, None, None, None, {"supplier_id": 7}, None]
             self.statements: list[tuple[str, tuple[object, ...] | None]] = []
 
         def execute(self, statement: str, params=None) -> None:
@@ -294,12 +371,18 @@ def test_database_saves_uploaded_file_type(monkeypatch) -> None:
         year=2026,
         file_hash="hash",
         file_type="xlsx",
+        original_filename="Quarterly Report.xlsx",
+        output_filename="2026_reports_V1.csv",
     )
 
     assert batch.file_type == "xlsx"
+    assert batch.original_filename == "Quarterly Report.xlsx"
     insert_params = connection.db_cursor.statements[-1][1]
     assert insert_params is not None
-    assert insert_params[-1] == "xlsx"
+    assert insert_params[-3] == "xlsx"
+    assert insert_params[-2] == "Quarterly Report.xlsx"
+    assert insert_params[-1] == "2026_reports_V1.csv"
+    assert any("original_filename" in statement for statement, _ in connection.db_cursor.statements)
 
 
 def test_upload_openapi_exposes_single_file_type_enum() -> None:
@@ -343,6 +426,75 @@ def test_csv_details_response_excludes_processor(tmp_path: Path, monkeypatch) ->
     assert "processor" not in details_response.json()
     openapi = client.get("/openapi.json").json()
     assert "processor" not in openapi["components"]["schemas"]["CSVFileDetailsResponse"]["properties"]
+
+
+def test_csv_details_are_returned_from_database_when_csv_is_missing(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(routes, "EXTRACT_DIR", tmp_path)
+    monkeypatch.setattr(routes.upload_service, "extract_dir", tmp_path)
+    batch = database.DataBatchRecord(
+        data_batch_id=17,
+        supplier_id=15,
+        batch_name="AAA",
+        country="SL",
+        created_at=None,
+        version=1,
+        data_category="financial",
+        year=1902,
+        file_hash="edd74611fbbd8d3d38ccc2e48a8bb74556f8f3e1316f0e91de310108a6c6c813",
+        file_type="xlsx",
+        original_filename="synthesized_financial_dataset.xlsx",
+    )
+    monkeypatch.setattr(manager, "get_batch_for_file", lambda _filename: batch)
+
+    response = client.get("/files/1902_AAA_V1.csv/details")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "filename": "1902_AAA_V1.csv",
+        "original_filename": "synthesized_financial_dataset.xlsx",
+        "data_batch_id": 17,
+        "file_hash": batch.file_hash,
+        "file_type": "xlsx",
+        "data_category": "financial",
+        "country": "SL",
+        "year": 1902,
+        "batch_name": "AAA",
+        "csv_path": str(tmp_path / "1902_AAA_V1.csv"),
+    }
+
+
+def test_csv_content_is_regenerated_from_matching_original_upload(tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "Output"
+    upload_dir = output_dir / "uploads"
+    upload_dir.mkdir(parents=True)
+    workbook = BytesIO()
+    pd.DataFrame({"id": [1], "name": ["Alice"]}).to_excel(workbook, index=False)
+    original_bytes = workbook.getvalue()
+    (upload_dir / "1901_QSD_V1.xlsx").write_bytes(original_bytes)
+
+    monkeypatch.setattr(routes, "EXTRACT_DIR", output_dir)
+    monkeypatch.setattr(routes.upload_service, "extract_dir", output_dir)
+    monkeypatch.setattr(routes.upload_service, "upload_dir", upload_dir)
+    batch = database.DataBatchRecord(
+        data_batch_id=16,
+        supplier_id=22,
+        batch_name="QSD",
+        country="SL",
+        created_at=None,
+        version=1,
+        data_category="financial",
+        year=1901,
+        file_hash=manager.compute_file_hash(original_bytes),
+        file_type="xlsx",
+    )
+    monkeypatch.setattr(manager, "get_batch_for_file", lambda _filename: batch)
+
+    response = client.get("/files/1901_QSD_V1.csv/content")
+
+    assert response.status_code == 200
+    assert "id,name" in response.text
+    assert "1,Alice" in response.text
+    assert (output_dir / "1901_QSD_V1.csv").is_file()
 
 
 def test_quarantine_notification_contains_downloadable_export_name(tmp_path: Path, monkeypatch) -> None:

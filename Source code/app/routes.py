@@ -2,7 +2,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Response, Uploa
 from fastapi.responses import FileResponse
 
 from app.config import EXTRACT_DIR, PROCESSING_MANAGER_URL
-from app.database import DatabaseError, ensure_supplier_and_batch
+from app.database import DatabaseError, check_connection, ensure_supplier_and_batch
 from app.manager import load_csv_metadata
 from app.schemas import (
     CSVFileDetails,
@@ -33,15 +33,35 @@ def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@router.get(
+    "/health/db",
+    tags=["File Manager"],
+    summary="Check the database connection",
+    responses={503: {"description": "Database unavailable"}},
+)
+def database_health_check() -> dict[str, str]:
+    try:
+        check_connection()
+    except DatabaseError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "ok", "database": "connected"}
+
+
 @router.post(
     "/upload",
     tags=["File Manager"],
     status_code=200,
-    response_description="Created",
+    response_description="Upload processed successfully.",
     responses={
         200: {"description": "OK - CSV file saved directly"},
         201: {"description": "Created"},
-        409: {"description": "Conflict - file already uploaded"},
+        409: {
+            "model": UploadResponse,
+            "description": (
+                "Conflict - file already uploaded (response includes the existing file details), "
+                "or a different file already uses the same year, batch name and version."
+            ),
+        },
     },
     summary="Upload a file and convert it to CSV",
     description=(
@@ -96,9 +116,15 @@ def get_csv_file_details(filename: str) -> CSVFileDetailsResponse:
 )
 def download_csv_file(filename: str) -> FileResponse:
     details = load_csv_metadata(filename, base_dir=EXTRACT_DIR)
-    csv_path = EXTRACT_DIR / details.filename
+    upload_service.extract_dir = EXTRACT_DIR
+    csv_path = upload_service.restore_csv_from_original(details)
+    if csv_path is None:
+        csv_path = EXTRACT_DIR / details.filename
     if not csv_path.is_file():
-        raise HTTPException(status_code=404, detail="CSV file not found.")
+        raise HTTPException(
+            status_code=404,
+            detail="CSV file and matching original upload were not found.",
+        )
     return FileResponse(csv_path, media_type="text/csv", filename=csv_path.name)
 
 
@@ -152,6 +178,8 @@ async def process_csv_from_file_manager(
             year=details.year,
             file_hash=details.file_hash,
             file_type=details.file_type.value,
+            original_filename=details.original_filename,
+            output_filename=details.filename,
         )
     except DatabaseError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
