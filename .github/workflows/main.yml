@@ -4,7 +4,7 @@ name: Build and Push File Manager Docker Image
 on:
   push:
     branches:
-      - parser-implementation
+      - parser-implementation2
   workflow_dispatch:
 
 jobs:
